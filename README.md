@@ -4,7 +4,7 @@
 [![Windows](https://img.shields.io/badge/Windows-7%2B-blue.svg)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Um componente/snippet Delphi para configurar silenciosamente o TLS 1.2 no PowerShell, garantindo conexões seguras com servidores que exigem protocolos modernos.
+Uma classe para configurar silenciosamente o TLS 1.2 no PowerShell, garantindo conexões seguras com servidores que exigem protocolos modernos.
 
 ---
 
@@ -76,7 +76,7 @@ uses
 
 procedure TfrmMain.FormCreate(Sender: TObject);
 begin
-  ConfigurarPowerShellTLS;
+  TPowerShellTLS.ConfigurarTLS12;
 end;
 ```
 
@@ -87,7 +87,7 @@ end;
 ```pascal
 procedure TfrmMain.btnAtivarTLSClick(Sender: TObject);
 begin
-  if ConfigurarPowerShellTLS then
+  if TPowerShellTLS.ConfigurarTLS12 then
     ShowMessage('TLS 1.2 configurado com sucesso!')
   else
     ShowMessage('Falha na configuração. Verifique o log.');
@@ -104,7 +104,7 @@ begin
   TThread.CreateAnonymousThread(
     procedure
     begin
-      ConfigurarPowerShellTLS;
+      TPowerShellTLS.ConfigurarTLS12;
     end
   ).Start;
 end;
@@ -120,125 +120,145 @@ unit uPowerShellTLS;
 interface
 
 uses
-  Windows, SysUtils, Forms;
+  Winapi.Windows,
+  System.SysUtils;
 
-function ConfigurarPowerShellTLS: Boolean;
+type
+  TPowerShellTLS = class
+  private
+    class procedure EscreverLog(var ALogFile: TextFile; const AMensagem: string); static;
+    class function ExecutarWinExec: Boolean; static;
+    class function ExecutarCreateProcess(var ALogFile: TextFile): Boolean; static;
+  public
+    class function ConfigurarTLS12: Boolean; static;
+  end;
 
 implementation
 
-function ConfigurarPowerShellTLS: Boolean;
+class procedure TPowerShellTLS.EscreverLog(var ALogFile: TextFile; const AMensagem: string);
+begin
+  Writeln(ALogFile, AMensagem);
+end;
+
+class function TPowerShellTLS.ExecutarWinExec: Boolean;
+const
+  CMD_TLS =
+    'powershell.exe -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12"';
+begin
+  Result := WinExec(PAnsiChar(AnsiString(CMD_TLS)), SW_HIDE) > 31;
+end;
+
+class function TPowerShellTLS.ExecutarCreateProcess(var ALogFile: TextFile): Boolean;
 var
-  LogFile: TextFile;
-  LogPath: string;
   StartupInfo: TStartupInfo;
   ProcessInfo: TProcessInformation;
   Command: string;
-  Success: Boolean;
   ExitCode: DWORD;
 begin
+  Result := False;
+
+  Command :=
+    'powershell.exe -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12"';
+
+  FillChar(StartupInfo, SizeOf(StartupInfo), 0);
+  FillChar(ProcessInfo, SizeOf(ProcessInfo), 0);
+
+  StartupInfo.cb := SizeOf(StartupInfo);
+  StartupInfo.dwFlags := STARTF_USESHOWWINDOW;
+  StartupInfo.wShowWindow := SW_HIDE;
+
+  if CreateProcess(
+    nil,
+    PChar(Command),
+    nil,
+    nil,
+    False,
+    CREATE_NO_WINDOW,
+    nil,
+    nil,
+    StartupInfo,
+    ProcessInfo
+  ) then
+  begin
+    EscreverLog(ALogFile, 'CreateProcess executado! Aguardando...');
+
+    WaitForSingleObject(ProcessInfo.hProcess, 5000);
+    GetExitCodeProcess(ProcessInfo.hProcess, ExitCode);
+
+    if ExitCode = 0 then
+    begin
+      EscreverLog(ALogFile, 'Processo finalizado com sucesso!');
+      Result := True;
+    end
+    else
+      EscreverLog(ALogFile, 'Processo finalizado com código: ' + IntToStr(ExitCode));
+
+    CloseHandle(ProcessInfo.hProcess);
+    CloseHandle(ProcessInfo.hThread);
+  end
+  else
+  begin
+    EscreverLog(ALogFile, 'CreateProcess falhou!');
+    EscreverLog(ALogFile, 'Erro: ' + IntToStr(GetLastError));
+  end;
+end;
+
+class function TPowerShellTLS.ConfigurarTLS12: Boolean;
+var
+  LogFile: TextFile;
+  LogPath: string;
+begin
+  Result := False;
   LogPath := ExtractFilePath(ParamStr(0)) + 'powershell_tls_log.txt';
-  Success := False;
+
+  AssignFile(LogFile, LogPath);
 
   try
-    AssignFile(LogFile, LogPath);
-
     if FileExists(LogPath) then
       Append(LogFile)
     else
       Rewrite(LogFile);
 
-    Writeln(LogFile, '========================================');
-    Writeln(LogFile, 'LOG - Ativação TLS 1.2 para PowerShell');
-    Writeln(LogFile, 'Data: ' + FormatDateTime('dd/mm/yyyy hh:nn:ss', Now));
-    Writeln(LogFile, 'Usuário: ' + GetEnvironmentVariable('USERNAME'));
-    Writeln(LogFile, 'Computador: ' + GetEnvironmentVariable('COMPUTERNAME'));
-    Writeln(LogFile, '----------------------------------------');
+    EscreverLog(LogFile, '========================================');
+    EscreverLog(LogFile, 'LOG - Ativação TLS 1.2 para PowerShell');
+    EscreverLog(LogFile, 'Data: ' + FormatDateTime('dd/mm/yyyy hh:nn:ss', Now));
+    EscreverLog(LogFile, 'Usuário: ' + GetEnvironmentVariable('USERNAME'));
+    EscreverLog(LogFile, 'Computador: ' + GetEnvironmentVariable('COMPUTERNAME'));
+    EscreverLog(LogFile, '----------------------------------------');
 
-    Writeln(LogFile, 'Tentando método 1: WinExec...');
+    EscreverLog(LogFile, 'Tentando método 1: WinExec...');
 
-    if WinExec(
-      'powershell.exe -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12"',
-      SW_HIDE
-    ) > 31 then
+    if ExecutarWinExec then
     begin
-      Writeln(LogFile, '✅ WinExec executado com sucesso!');
-      Success := True;
+      EscreverLog(LogFile, 'WinExec executado com sucesso!');
+      Result := True;
     end
     else
     begin
-      Writeln(LogFile, '⚠️ WinExec falhou. Tentando CreateProcess...');
-
-      Command :=
-        'powershell.exe -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12"';
-
-      FillChar(StartupInfo, SizeOf(StartupInfo), 0);
-
-      StartupInfo.cb := SizeOf(StartupInfo);
-      StartupInfo.dwFlags := STARTF_USESHOWWINDOW;
-      StartupInfo.wShowWindow := SW_HIDE;
-
-      if CreateProcess(
-        nil,
-        PChar(Command),
-        nil,
-        nil,
-        False,
-        CREATE_NO_WINDOW,
-        nil,
-        nil,
-        StartupInfo,
-        ProcessInfo
-      ) then
-      begin
-        Writeln(LogFile, '✅ CreateProcess executado!');
-
-        WaitForSingleObject(ProcessInfo.hProcess, 5000);
-
-        GetExitCodeProcess(ProcessInfo.hProcess, ExitCode);
-
-        if ExitCode = 0 then
-        begin
-          Writeln(LogFile, '✅ Processo finalizado com sucesso!');
-          Success := True;
-        end
-        else
-          Writeln(LogFile,
-            '⚠️ Processo finalizado com código: ' +
-            IntToStr(ExitCode));
-
-        CloseHandle(ProcessInfo.hProcess);
-        CloseHandle(ProcessInfo.hThread);
-      end
-      else
-      begin
-        Writeln(LogFile, '❌ CreateProcess falhou!');
-        Writeln(LogFile, 'Erro: ' + IntToStr(GetLastError));
-      end;
+      EscreverLog(LogFile, 'WinExec falhou, tentando método 2: CreateProcess...');
+      Result := ExecutarCreateProcess(LogFile);
     end;
 
-    Writeln(LogFile, '----------------------------------------');
+    EscreverLog(LogFile, '----------------------------------------');
 
-    if Success then
+    if Result then
     begin
-      Writeln(LogFile, '✅ STATUS: TLS 1.2 configurado!');
-      Writeln(LogFile, '✅ PowerShell pronto para conexões seguras.');
+      EscreverLog(LogFile, 'STATUS: TLS 1.2 configurado com sucesso!');
+      EscreverLog(LogFile, 'O PowerShell agora pode usar TLS 1.2');
     end
     else
     begin
-      Writeln(LogFile, '❌ STATUS: Falha na configuração!');
+      EscreverLog(LogFile, 'STATUS: Falha na configuração!');
+      EscreverLog(LogFile, 'Verifique se o PowerShell está instalado');
+      EscreverLog(LogFile, 'Execute manualmente como administrador se necessário');
     end;
 
-    Writeln(LogFile,
-      'Finalizado em: ' +
-      FormatDateTime('dd/mm/yyyy hh:nn:ss', Now));
-
-    Writeln(LogFile, '========================================');
+    EscreverLog(LogFile, 'Finalizado em: ' + FormatDateTime('dd/mm/yyyy hh:nn:ss', Now));
+    EscreverLog(LogFile, '========================================' + sLineBreak);
 
   finally
     CloseFile(LogFile);
   end;
-
-  Result := Success;
 end;
 
 end.
